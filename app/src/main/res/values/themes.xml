@@ -1,0 +1,9 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.RecipeApp" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#FF7043</item>
+        <item name="colorPrimaryDark">#F2F2F7</item>
+        <item name="colorAccent">#FF7043</item>
+        <item name="android:statusBarColor">#F2F2F7</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+    </style>
+</resources>
