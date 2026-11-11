@@ -319,7 +319,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue"
         <div style="text-align:center;margin-bottom:20px;">
           <div style="width:64px;height:64px;border-radius:18px;margin:0 auto 12px;background:linear-gradient(135deg,#FFB088,#FF7043);display:flex;align-items:center;justify-content:center;font-size:32px;">🍳</div>
           <div style="font-size:18px;font-weight:700;color:#1C1C1E;">韦氏菜谱</div>
-          <div style="font-size:13px;color:#8E8E93;margin-top:3px;">v1.2.0 · 纯本地存储</div>
+          <div style="font-size:13px;color:#8E8E93;margin-top:3px;">v1.3.0 · 纯本地存储</div>
         </div>
         <div class="group">
           <div class="grow" onclick="exportBackup()"><span>导出备份 (JSON)</span><span class="gval" id="backupCount">0 道菜谱</span></div>
@@ -384,7 +384,7 @@ function fallbackCopy(text) {
 }
 
 // ================= 数据与状态 =================
-// 演示数据（包含各种单位和复杂情况）
+// 演示数据（包含各种单位和复杂情况，方便测试）
 const DEMO_RECIPES = [
   { id:1, name:'红烧肉', category:'肉菜', likes: 5, image: null, ingredients:['五花肉 500g','冰糖 30g'], steps:['五花肉切块焯水','炒糖色下肉上色','加水炖煮40分钟收汁'] },
   { id:2, name:'羊肉串', category:'肉菜', likes: 2, image: null, ingredients:['羊肉 300g','孜然 适量'], steps:['羊肉切块腌制','穿串','烤熟撒孜然'] },
@@ -400,7 +400,7 @@ const DEMO_RECIPES = [
 let recipes = [];
 let currentWeekDetails = []; 
 let currentCategory = '全部'; 
-const STORAGE_KEY = 'wei_recipe_official_v15'; 
+const STORAGE_KEY = 'wei_recipe_official_v16_fix'; // 更换存储键，防止旧缓存干扰
 
 function persist(){ 
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes)); } catch(e) {}
@@ -686,7 +686,7 @@ function likeDish(id, btnEl){
   btnEl.classList.add('animate'); setTimeout(() => btnEl.classList.remove('animate'), 300);
 }
 
-// ================= 分享与导出 (核心优化) =================
+// ================= 分享与导出 (彻底修复重叠) =================
 function openShareModal() {
   if (currentWeekDetails.length === 0) return showToast('请先生成食谱');
   document.getElementById('shareModal').style.display = 'flex';
@@ -696,23 +696,25 @@ function closeShareModal(e) {
   document.getElementById('shareModal').style.display = 'none';
 }
 
+// 核心换行计算函数 (修复了单行不增加Y坐标的致命Bug)
 function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
   if(!text) return y;
   let words = text.split('');
   let line = '';
+  let currentY = y;
   for(let n = 0; n < words.length; n++) {
     let testLine = line + words[n];
     let metrics = ctx.measureText(testLine);
     if (metrics.width > maxWidth && n > 0) {
-      ctx.fillText(line, x, y);
+      ctx.fillText(line, x, currentY);
       line = words[n];
-      y += lineHeight;
+      currentY += lineHeight;
     } else {
       line = testLine;
     }
   }
-  ctx.fillText(line, x, y);
-  return y;
+  ctx.fillText(line, x, currentY);
+  return currentY + lineHeight; // 【关键修复】无论是否换行，都把Y坐标增加一个行高，防止下一次重叠
 }
 
 function generateAndPreviewImage(type) {
@@ -721,28 +723,15 @@ function generateAndPreviewImage(type) {
   const ctx = canvas.getContext('2d');
   const width = 800;
   canvas.width = width;
-  canvas.height = 4000; 
+  canvas.height = 5000; // 给一个绝对安全的高度
 
-  ctx.fillStyle = '#F8F8FA';
-  ctx.fillRect(0, 0, width, canvas.height);
-
-  ctx.fillStyle = '#FF7043';
-  ctx.font = 'bold 36px "PingFang SC", "Microsoft YaHei", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('韦氏菜谱 - 采购清单', width/2, 80);
-  
-  ctx.font = '18px "PingFang SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#8E8E93';
-  let dateStr = new Date().toLocaleDateString();
-  ctx.fillText(`生成日期: ${dateStr} (${type === 'detailed' ? '详细版' : '汇总版'})`, width/2, 120);
-
-  ctx.textAlign = 'left';
-
-  // 智能解析食材函数
-  function parseAndAggregateIngredients() {
+  // 预处理食材数据
+  let finalDataList = [];
+  if (type === 'detailed') {
+    finalDataList = currentWeekDetails;
+  } else {
     let allIngredients = [];
     currentWeekDetails.forEach(item => allIngredients.push(...item.ingredients));
-    
     let ingredientsMap = {};
     allIngredients.forEach(ing => {
       const match = ing.match(/^([^\d]+?)\s*(\d+(?:\.\d+)?)\s*(kg|g|个|只|根|颗|勺|ml|L)?$/i) || 
@@ -755,9 +744,7 @@ function generateAndPreviewImage(type) {
         } else {
           qty = parseFloat(match[1]); unit = match[2] || ''; name = match[3].trim();
         }
-        
         if (unit.toLowerCase() === 'kg') { qty *= 1000; unit = 'g'; }
-        
         const key = name + '_' + unit; 
         if (!ingredientsMap[key]) ingredientsMap[key] = { name, qty: 0, unit, raw: ing };
         ingredientsMap[key].qty += qty;
@@ -765,69 +752,80 @@ function generateAndPreviewImage(type) {
         if (!ingredientsMap[ing]) ingredientsMap[ing] = { name: ing, qty: 1, unit: '', raw: ing };
       }
     });
-
-    let result = [];
     Object.values(ingredientsMap).forEach(item => {
       if (item.unit === '') {
-         result.push(item.qty > 1 ? `${item.name} ×${item.qty}` : item.name);
+         finalDataList.push(item.qty > 1 ? `${item.name} ×${item.qty}` : item.name);
       } else {
          let finalQty = item.qty; let finalUnit = item.unit;
          if (finalUnit === 'g' && finalQty >= 1000) { finalQty = finalQty / 1000; finalUnit = 'kg'; }
          finalQty = parseFloat(finalQty.toFixed(2));
-         result.push(`${item.name} ${finalQty}${finalUnit}`);
+         finalDataList.push(`${item.name} ${finalQty}${finalUnit}`);
       }
     });
-    return result.sort();
+    finalDataList.sort();
   }
 
-  function drawContent(c, y) {
-    if (type === 'detailed') {
-      let lastDay = "";
-      currentWeekDetails.forEach(item => {
-        if (item.day !== lastDay) {
-          y += 20;
-          c.fillStyle = '#FF7043';
-          c.font = 'bold 24px "PingFang SC", "Microsoft YaHei", sans-serif';
-          c.fillText(item.day, 50, y);
-          y += 35;
-          lastDay = item.day;
-        }
-        c.fillStyle = '#1C1C1E';
-        c.font = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
-        c.fillText(`[${item.meal}] ${item.dish}`, 70, y);
-        y += 30;
+  // 统一的字体设置
+  const fontTitle = 'bold 36px "PingFang SC", "Microsoft YaHei", sans-serif';
+  const fontSub = '18px "PingFang SC", "Microsoft YaHei", sans-serif';
+  const fontDay = 'bold 24px "PingFang SC", "Microsoft YaHei", sans-serif';
+  const fontDish = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
+  const fontIng = '18px "PingFang SC", "Microsoft YaHei", sans-serif';
+  const fontItem = '20px "PingFang SC", "Microsoft YaHei", sans-serif';
 
-        c.fillStyle = '#555555';
-        c.font = '18px "PingFang SC", "Microsoft YaHei", sans-serif';
-        y = wrapText(c, `食材：${item.ingredients.join('、')}`, 90, y, width - 160, 28);
-        y += 25;
-      });
-    } else {
-      const aggregated = parseAndAggregateIngredients();
-      
-      c.fillStyle = '#1C1C1E';
-      c.font = 'bold 20px "PingFang SC", "Microsoft YaHei", sans-serif';
-      c.fillText(`共计 ${aggregated.length} 种食材：`, 50, y);
-      y += 40;
-
-      c.font = '20px "PingFang SC", "Microsoft YaHei", sans-serif';
-      aggregated.forEach(text => {
-        c.fillStyle = '#1C1C1E';
-        y = wrapText(c, `☐ ${text}`, 60, y, width - 120, 32);
-        y += 15;
-      });
-    }
-    return y;
-  }
-
+  // 1. 计算真实高度
   const tempCanvas = document.createElement('canvas');
   const tempCtx = tempCanvas.getContext('2d');
-  let endY = drawContent(tempCtx, 200);
-  let cardHeight = endY - 160 + 20;
+  tempCtx.font = fontItem; // 关键：设置字体否则测宽不准
+  let calcY = 200; 
+  
+  if (type === 'detailed') {
+    let lastDay = "";
+    finalDataList.forEach(item => {
+      if (item.day !== lastDay) {
+        calcY += 20; // 换日间距
+        calcY += 35; // 标题高度
+        lastDay = item.day;
+      }
+      calcY += 30; // 菜名高度
+      // 食材换行高度计算 (简单模拟，估算 3 行左右足够，或者用真实测量)
+      tempCtx.font = fontIng;
+      let text = `食材：${item.ingredients.join('、')}`;
+      // 简单估算行数
+      let lines = Math.ceil(tempCtx.measureText(text).width / (width - 160)) || 1;
+      calcY += lines * 28 + 25;
+      tempCtx.font = fontItem; // 恢复
+    });
+  } else {
+    calcY += 40; // 标题高度
+    finalDataList.forEach(text => {
+      let lines = Math.ceil(tempCtx.measureText(`☐ ${text}`).width / (width - 120)) || 1;
+      calcY += lines * 32 + 15;
+    });
+  }
+  
+  const finalHeight = calcY + 80; // 加上底部留白
+  canvas.height = finalHeight;
 
+  // 2. 画背景
+  ctx.fillStyle = '#F8F8FA';
+  ctx.fillRect(0, 0, width, finalHeight);
+
+  // 3. 画顶部标题
+  ctx.fillStyle = '#FF7043';
+  ctx.font = fontTitle;
+  ctx.textAlign = 'center';
+  ctx.fillText('韦氏菜谱 - 采购清单', width/2, 80);
+  
+  ctx.font = fontSub;
+  ctx.fillStyle = '#8E8E93';
+  let dateStr = new Date().toLocaleDateString();
+  ctx.fillText(`生成日期: ${dateStr} (${type === 'detailed' ? '详细版' : '汇总版'})`, width/2, 120);
+
+  // 4. 画白色卡片背景
   ctx.save();
   ctx.beginPath();
-  const radius = 20, x = 20, y = 160, w = width - 40, h = cardHeight;
+  const radius = 20, x = 20, y = 160, w = width - 40, h = finalHeight - 160 - 40;
   ctx.moveTo(x + radius, y); ctx.lineTo(x + w - radius, y); ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
   ctx.lineTo(x + w, y + h - radius); ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
   ctx.lineTo(x + radius, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
@@ -835,20 +833,53 @@ function generateAndPreviewImage(type) {
   ctx.fillStyle = '#FFFFFF'; ctx.fill();
   ctx.restore();
 
-  let finalY = drawContent(ctx, 200);
+  // 5. 画真实内容
+  ctx.textAlign = 'left';
+  let currentY = 200;
 
-  finalY += 40;
+  if (type === 'detailed') {
+    let lastDay = "";
+    finalDataList.forEach(item => {
+      if (item.day !== lastDay) {
+        currentY += 20;
+        ctx.fillStyle = '#FF7043';
+        ctx.font = fontDay;
+        ctx.fillText(item.day, 50, currentY);
+        currentY += 35;
+        lastDay = item.day;
+      }
+      ctx.fillStyle = '#1C1C1E';
+      ctx.font = fontDish;
+      ctx.fillText(`[${item.meal}] ${item.dish}`, 70, currentY);
+      currentY += 30;
+
+      ctx.fillStyle = '#555555';
+      ctx.font = fontIng;
+      currentY = wrapText(ctx, `食材：${item.ingredients.join('、')}`, 90, currentY, width - 160, 28);
+      currentY += 10; // 菜与菜之间的额外间距
+    });
+  } else {
+    ctx.fillStyle = '#1C1C1E';
+    ctx.font = fontDish;
+    ctx.fillText(`共计 ${finalDataList.length} 种食材：`, 50, currentY);
+    currentY += 40;
+
+    ctx.font = fontItem;
+    finalDataList.forEach(text => {
+      ctx.fillStyle = '#1C1C1E';
+      currentY = wrapText(ctx, `☐ ${text}`, 60, currentY, width - 120, 32);
+      currentY += 10; // 行与行之间的额外间距
+    });
+  }
+
+  // 6. 底部水印
   ctx.textAlign = 'center';
   ctx.fillStyle = '#D1D1D6';
   ctx.font = '16px "PingFang SC", "Microsoft YaHei", sans-serif';
-  ctx.fillText('—— 由韦氏菜谱智能生成 ——', width/2, finalY);
-  finalY += 50;
+  ctx.fillText('—— 由韦氏菜谱智能生成 ——', width/2, finalHeight - 30);
 
-  const finalCanvas = document.createElement('canvas');
-  finalCanvas.width = width; finalCanvas.height = finalY;
-  finalCanvas.getContext('2d').drawImage(canvas, 0, 0, width, finalY, 0, 0, width, finalY);
-
-  document.getElementById('generatedImage').src = finalCanvas.toDataURL('image/png');
+  // 7. 输出预览
+  document.getElementById('generatedImage').src = canvas.toDataURL('image/png');
   document.getElementById('imagePreviewModal').style.display = 'flex';
 }
 
